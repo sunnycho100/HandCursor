@@ -45,6 +45,10 @@ final class GestureEngine: GestureEngineProtocol {
     private var mouseDownTime: CFTimeInterval?
     private var lastCursorPosition: CGPoint?
     
+    // Debounce timing for pinch detection
+    private var pinchStartTime: CFTimeInterval?
+    private var unpinchStartTime: CFTimeInterval?
+    
     // MARK: - Initialization
     
     init(
@@ -64,13 +68,13 @@ final class GestureEngine: GestureEngineProtocol {
     func processFrame(_ handFrame: HandFrame, smoothedPoint: SmoothedPoint) {
         // Check if hand is detected
         guard !handFrame.landmarks.isEmpty else {
-            transitionTo(.idle, at: handFrame.timestamp)
+            handleHandLost(at: handFrame.timestamp)
             return
         }
         
         // Calculate pinch distance
         guard let pinchDistance = handFrame.pinchDistance else {
-            transitionTo(.idle, at: handFrame.timestamp)
+            handleHandLost(at: handFrame.timestamp)
             return
         }
         
@@ -146,17 +150,67 @@ final class GestureEngine: GestureEngineProtocol {
         mouseDownPosition = nil
         mouseDownTime = nil
         lastCursorPosition = nil
+        pinchStartTime = nil
+        unpinchStartTime = nil
     }
     
     // MARK: - Private Methods
     
+    /// Handle hand lost - emit mouseUp if currently down, then transition to idle
+    private func handleHandLost(at timestamp: CFTimeInterval) {
+        if currentState == .down || currentState == .drag {
+            emitEvent(.mouseUp)
+        }
+        transitionTo(.idle, at: timestamp)
+        pinchStartTime = nil
+        unpinchStartTime = nil
+    }
+    
     private func evaluatePinch(distance: CGFloat, timestamp: CFTimeInterval) -> Bool {
         // Apply hysteresis to prevent fluttering
-        let threshold = currentState == .down || currentState == .drag
-            ? pinchThreshold + pinchHysteresis
-            : pinchThreshold
+        let downThreshold = pinchThreshold
+        let upThreshold = pinchThreshold + pinchHysteresis
         
-        return distance < threshold
+        let isCurrentlyDown = currentState == .down || currentState == .drag
+        let threshold = isCurrentlyDown ? upThreshold : downThreshold
+        let isPinched = distance < threshold
+        
+        // Track timing for debounce on threshold duration
+        if isCurrentlyDown {
+            // Currently down - check if we should release
+            if !isPinched {
+                // Started unpinching
+                if unpinchStartTime == nil {
+                    unpinchStartTime = timestamp
+                }
+                // Only release if unpinched for debounceTime
+                if timestamp - (unpinchStartTime ?? timestamp) >= debounceTime {
+                    pinchStartTime = nil
+                    return false
+                }
+                return true // Still considered pinched during debounce
+            } else {
+                unpinchStartTime = nil
+                return true
+            }
+        } else {
+            // Currently up - check if we should press
+            if isPinched {
+                // Started pinching
+                if pinchStartTime == nil {
+                    pinchStartTime = timestamp
+                }
+                // Only trigger if pinched for debounceTime
+                if timestamp - (pinchStartTime ?? timestamp) >= debounceTime {
+                    unpinchStartTime = nil
+                    return true
+                }
+                return false // Not yet pinched during debounce
+            } else {
+                pinchStartTime = nil
+                return false
+            }
+        }
     }
     
     private func transitionTo(_ newState: GestureState, at timestamp: CFTimeInterval) {

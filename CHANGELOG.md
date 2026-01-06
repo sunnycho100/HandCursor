@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.2] - 2026-01-07
+
+### Fixed
+- GestureEngine now emits mouseUp when hand is lost while in down/drag state
+- Proper debounce timing: pinch must be held for debounceTime before triggering
+
+### Improved
+- PointerController now supports multi-display coordinate mapping by default
+- Added dead zone (1px) to reduce cursor jitter from tiny movements
+- Cursor position now clamped to screen bounds
+
 ## [1.0.1] - 2026-01-06
 
 ### Fixed

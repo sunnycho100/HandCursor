@@ -28,6 +28,9 @@ final class PointerController: PointerControllerProtocol {
     private var isMouseDown: Bool = false
     private var currentScreenPosition: CGPoint = .zero
     
+    /// Dead zone threshold - movements smaller than this are ignored
+    private let deadZoneThreshold: CGFloat = 1.0
+    
     // MARK: - Initialization
     
     init() {
@@ -57,21 +60,41 @@ final class PointerController: PointerControllerProtocol {
     }
     
     func convertToScreenCoordinates(_ normalizedPoint: CGPoint) -> CGPoint {
-        // Get main screen bounds
-        guard let screen = NSScreen.main else {
+        // Use multi-display support by default
+        let screens = NSScreen.screens
+        
+        guard !screens.isEmpty else {
             return .zero
         }
         
-        let screenFrame = screen.frame
+        // Calculate total bounds across all displays
+        var minX: CGFloat = .infinity
+        var maxX: CGFloat = -.infinity
+        var minY: CGFloat = .infinity
+        var maxY: CGFloat = -.infinity
+        
+        for screen in screens {
+            let frame = screen.frame
+            minX = min(minX, frame.minX)
+            maxX = max(maxX, frame.maxX)
+            minY = min(minY, frame.minY)
+            maxY = max(maxY, frame.maxY)
+        }
+        
+        let totalWidth = maxX - minX
+        let totalHeight = maxY - minY
         
         // Vision coordinates: (0,0) is bottom-left, (1,1) is top-right
         // Screen coordinates: (0,0) is top-left
+        // Invert Y-axis and scale to total screen dimensions
+        let x = normalizedPoint.x * totalWidth + minX
+        let y = (1.0 - normalizedPoint.y) * totalHeight + minY
         
-        // Invert Y-axis and scale to screen dimensions
-        let x = normalizedPoint.x * screenFrame.width + screenFrame.minX
-        let y = (1.0 - normalizedPoint.y) * screenFrame.height + screenFrame.minY
+        // Clamp to screen bounds
+        let clampedX = max(minX, min(x, maxX - 1))
+        let clampedY = max(minY, min(y, maxY - 1))
         
-        return CGPoint(x: x, y: y)
+        return CGPoint(x: clampedX, y: clampedY)
     }
     
     // MARK: - Private Methods
@@ -87,6 +110,14 @@ final class PointerController: PointerControllerProtocol {
     }
     
     private func moveCursor(to point: CGPoint) {
+        // Apply dead zone - ignore tiny movements to reduce jitter
+        let dx = abs(point.x - currentScreenPosition.x)
+        let dy = abs(point.y - currentScreenPosition.y)
+        
+        if dx < deadZoneThreshold && dy < deadZoneThreshold {
+            return // Movement too small, ignore
+        }
+        
         currentScreenPosition = point
         
         let eventType: CGEventType = isMouseDown ? .leftMouseDragged : .mouseMoved
