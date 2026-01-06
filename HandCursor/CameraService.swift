@@ -12,6 +12,7 @@ import CoreVideo
 
 protocol CameraServiceProtocol: AnyObject {
     var delegate: CameraServiceDelegate? { get set }
+    var frameHandler: ((CVPixelBuffer, CFTimeInterval) -> Void)? { get set }
     func start() async throws
     func stop()
     var isRunning: Bool { get }
@@ -29,9 +30,12 @@ final class CameraService: NSObject, CameraServiceProtocol {
     
     weak var delegate: CameraServiceDelegate?
     
+    /// Synchronous frame handler called on the capture queue - use this for processing
+    nonisolated(unsafe) var frameHandler: ((CVPixelBuffer, CFTimeInterval) -> Void)?
+    
     private let captureSession = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
-    private let sessionQueue = DispatchQueue(label: "com.handcursor.camera")
+    private let sessionQueue = DispatchQueue(label: "com.handcursor.camera", qos: .userInteractive)
     
     private(set) var isRunning = false
     
@@ -154,9 +158,8 @@ extension CameraService: AVCaptureVideoDataOutputSampleBufferDelegate {
         
         let timestamp = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
         
-        Task { @MainActor in
-            delegate?.cameraService(self, didCapture: pixelBuffer, timestamp: timestamp)
-        }
+        // Process frame synchronously on the capture queue where pixelBuffer is valid
+        frameHandler?(pixelBuffer, timestamp)
     }
     
     nonisolated func captureOutput(

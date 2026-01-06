@@ -135,6 +135,11 @@ class HandCursorCoordinator: NSObject, ObservableObject {
     private func setupDelegates() {
         cameraService.delegate = self
         gestureEngine.delegate = self
+        
+        // Setup frame handler for synchronous processing on capture queue
+        cameraService.frameHandler = { [weak self] pixelBuffer, timestamp in
+            self?.processFrameOnCaptureQueue(pixelBuffer, timestamp: timestamp)
+        }
     }
     
     // MARK: - Public Methods
@@ -171,31 +176,40 @@ class HandCursorCoordinator: NSObject, ObservableObject {
     
     // MARK: - Pipeline Processing
     
-    private func processFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CFTimeInterval) {
-        Task {
-            // Step 1: Detect hand landmarks
-            guard let handFrame = await handTrackingService.processFrame(pixelBuffer, timestamp: timestamp) else {
-                isHandDetected = false
-                gestureEngine.processFrame(
-                    HandFrame(timestamp: timestamp, landmarks: [], confidence: 0),
-                    smoothedPoint: SmoothedPoint(point: .zero, timestamp: timestamp, rawPoint: .zero)
-                )
-                return
-            }
-            
-            isHandDetected = true
-            
-            // Step 2: Get pointer position (use index tip)
-            guard let indexTip = handFrame.indexTip else {
-                return
-            }
-            
-            // Step 3: Smooth the position
-            let smoothedPoint = stabilizationLayer.smooth(point: indexTip.point, timestamp: timestamp)
-            
-            // Step 4: Process gesture
-            gestureEngine.processFrame(handFrame, smoothedPoint: smoothedPoint)
+    /// Process frame synchronously on the camera capture queue
+    private nonisolated func processFrameOnCaptureQueue(_ pixelBuffer: CVPixelBuffer, timestamp: CFTimeInterval) {
+        // Step 1: Detect hand landmarks (synchronous, on capture queue)
+        let handFrame = handTrackingService.processFrame(pixelBuffer, timestamp: timestamp)
+        
+        // Step 2: Send results to main thread for UI updates and gesture processing
+        Task { @MainActor [weak self] in
+            self?.processHandFrame(handFrame, timestamp: timestamp)
         }
+    }
+    
+    /// Process hand frame results on main thread
+    private func processHandFrame(_ handFrame: HandFrame?, timestamp: CFTimeInterval) {
+        guard let handFrame = handFrame else {
+            isHandDetected = false
+            gestureEngine.processFrame(
+                HandFrame(timestamp: timestamp, landmarks: [], confidence: 0),
+                smoothedPoint: SmoothedPoint(point: .zero, timestamp: timestamp, rawPoint: .zero)
+            )
+            return
+        }
+        
+        isHandDetected = true
+        
+        // Get pointer position (use index tip)
+        guard let indexTip = handFrame.indexTip else {
+            return
+        }
+        
+        // Smooth the position
+        let smoothedPoint = stabilizationLayer.smooth(point: indexTip.point, timestamp: timestamp)
+        
+        // Process gesture
+        gestureEngine.processFrame(handFrame, smoothedPoint: smoothedPoint)
     }
 }
 
@@ -204,9 +218,7 @@ class HandCursorCoordinator: NSObject, ObservableObject {
 extension HandCursorCoordinator: CameraServiceDelegate {
     
     nonisolated func cameraService(_ service: CameraServiceProtocol, didCapture pixelBuffer: CVPixelBuffer, timestamp: CFTimeInterval) {
-        Task { @MainActor in
-            processFrame(pixelBuffer, timestamp: timestamp)
-        }
+        // Frame processing now handled by frameHandler
     }
     
     nonisolated func cameraService(_ service: CameraServiceProtocol, didFailWithError error: Error) {

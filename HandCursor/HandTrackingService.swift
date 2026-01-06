@@ -12,7 +12,7 @@ import CoreGraphics
 // MARK: - Protocol
 
 protocol HandTrackingServiceProtocol: AnyObject {
-    func processFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CFTimeInterval) async -> HandFrame?
+    func processFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CFTimeInterval) -> HandFrame?
 }
 
 // MARK: - Hand Tracking Service Implementation
@@ -34,7 +34,8 @@ final class HandTrackingService: HandTrackingServiceProtocol {
     
     // MARK: - Public Methods
     
-    func processFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CFTimeInterval) async -> HandFrame? {
+    /// Process frame synchronously - call this from the camera capture queue
+    func processFrame(_ pixelBuffer: CVPixelBuffer, timestamp: CFTimeInterval) -> HandFrame? {
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:])
         
         do {
