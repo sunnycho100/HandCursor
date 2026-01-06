@@ -133,7 +133,6 @@ class HandCursorCoordinator: NSObject, ObservableObject {
     // MARK: - Setup
     
     private func setupDelegates() {
-        cameraService.delegate = self
         gestureEngine.delegate = self
         
         // Setup frame handler for synchronous processing on capture queue
@@ -210,21 +209,6 @@ class HandCursorCoordinator: NSObject, ObservableObject {
         
         // Process gesture
         gestureEngine.processFrame(handFrame, smoothedPoint: smoothedPoint)
-    }
-}
-
-// MARK: - Camera Service Delegate
-
-extension HandCursorCoordinator: CameraServiceDelegate {
-    
-    nonisolated func cameraService(_ service: CameraServiceProtocol, didCapture pixelBuffer: CVPixelBuffer, timestamp: CFTimeInterval) {
-        // Frame processing now handled by frameHandler
-    }
-    
-    nonisolated func cameraService(_ service: CameraServiceProtocol, didFailWithError error: Error) {
-        Task { @MainActor in
-            errorMessage = error.localizedDescription
-        }
     }
 }
 

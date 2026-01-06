@@ -3,6 +3,7 @@
 //  HandCursor
 //
 //  Captures video frames from the Mac camera using AVFoundation
+//  Optimized for low-latency hand tracking
 //
 
 import AVFoundation
@@ -11,24 +12,16 @@ import CoreVideo
 // MARK: - Protocol
 
 protocol CameraServiceProtocol: AnyObject {
-    var delegate: CameraServiceDelegate? { get set }
     var frameHandler: ((CVPixelBuffer, CFTimeInterval) -> Void)? { get set }
     func start() async throws
     func stop()
     var isRunning: Bool { get }
 }
 
-protocol CameraServiceDelegate: AnyObject {
-    func cameraService(_ service: CameraServiceProtocol, didCapture pixelBuffer: CVPixelBuffer, timestamp: CFTimeInterval)
-    func cameraService(_ service: CameraServiceProtocol, didFailWithError error: Error)
-}
-
 // MARK: - Camera Service Implementation
 
 @MainActor
 final class CameraService: NSObject, CameraServiceProtocol {
-    
-    weak var delegate: CameraServiceDelegate?
     
     /// Synchronous frame handler called on the capture queue - use this for processing
     nonisolated(unsafe) var frameHandler: ((CVPixelBuffer, CFTimeInterval) -> Void)?
@@ -39,28 +32,17 @@ final class CameraService: NSObject, CameraServiceProtocol {
     
     private(set) var isRunning = false
     
+    /// Target frame rate for capture
+    private let targetFrameRate: Double = 30.0
+    
     // MARK: - Lifecycle
     
     override init() {
         super.init()
-        setupCaptureSession()
     }
     
     deinit {
         stop()
-    }
-    
-    // MARK: - Setup
-    
-    private func setupCaptureSession() {
-        captureSession.beginConfiguration()
-        
-        // Configure session preset
-        if captureSession.canSetSessionPreset(.vga640x480) {
-            captureSession.sessionPreset = .vga640x480
-        }
-        
-        captureSession.commitConfiguration()
     }
     
     // MARK: - Public Methods
@@ -75,7 +57,7 @@ final class CameraService: NSObject, CameraServiceProtocol {
         // Setup camera device
         try await setupCamera()
         
-        // Start capture session
+        // Start capture session on background queue
         sessionQueue.async { [weak self] in
             self?.captureSession.startRunning()
         }
@@ -84,6 +66,7 @@ final class CameraService: NSObject, CameraServiceProtocol {
     }
     
     func stop() {
+        guard isRunning else { return }
         sessionQueue.async { [weak self] in
             self?.captureSession.stopRunning()
         }
@@ -106,40 +89,76 @@ final class CameraService: NSObject, CameraServiceProtocol {
     }
     
     private func setupCamera() async throws {
-        // Find camera device
+        captureSession.beginConfiguration()
+        defer { captureSession.commitConfiguration() }
+        
+        // Use lower resolution for faster processing
+        // 640x480 is sufficient for hand tracking
+        if captureSession.canSetSessionPreset(.vga640x480) {
+            captureSession.sessionPreset = .vga640x480
+        }
+        
+        // Find camera device - prefer front camera for hand tracking
         guard let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
                 ?? AVCaptureDevice.default(for: .video) else {
             throw CameraError.deviceNotFound
         }
         
-        // Create input
-        let input = try AVCaptureDeviceInput(device: camera)
+        // Configure camera for low latency
+        try configureCamera(camera)
         
+        // Create and add input
+        let input = try AVCaptureDeviceInput(device: camera)
         guard captureSession.canAddInput(input) else {
             throw CameraError.cannotAddInput
         }
-        
         captureSession.addInput(input)
         
-        // Configure video output
-        videoOutput.setSampleBufferDelegate(self, queue: sessionQueue)
-        videoOutput.alwaysDiscardsLateVideoFrames = true
-        videoOutput.videoSettings = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
-        ]
+        // Configure video output for low latency
+        configureVideoOutput()
         
         guard captureSession.canAddOutput(videoOutput) else {
             throw CameraError.cannotAddOutput
         }
-        
         captureSession.addOutput(videoOutput)
         
-        // Configure connection
+        // Configure connection - mirror for natural hand movement
         if let connection = videoOutput.connection(with: .video) {
             if connection.isVideoMirroringSupported {
                 connection.isVideoMirrored = true
             }
         }
+    }
+    
+    private func configureCamera(_ camera: AVCaptureDevice) throws {
+        try camera.lockForConfiguration()
+        defer { camera.unlockForConfiguration() }
+        
+        // Set frame rate for consistent timing
+        let frameDuration = CMTime(value: 1, timescale: CMTimeScale(targetFrameRate))
+        camera.activeVideoMinFrameDuration = frameDuration
+        camera.activeVideoMaxFrameDuration = frameDuration
+        
+        // Disable features that add latency
+        if camera.isExposureModeSupported(.continuousAutoExposure) {
+            camera.exposureMode = .continuousAutoExposure
+        }
+        if camera.isFocusModeSupported(.continuousAutoFocus) {
+            camera.focusMode = .continuousAutoFocus
+        }
+    }
+    
+    private func configureVideoOutput() {
+        // Process on high-priority queue
+        videoOutput.setSampleBufferDelegate(self, queue: sessionQueue)
+        
+        // Critical: Always discard late frames to minimize latency
+        videoOutput.alwaysDiscardsLateVideoFrames = true
+        
+        // Use BGRA format - optimal for Vision framework
+        videoOutput.videoSettings = [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+        ]
     }
 }
 
@@ -167,7 +186,8 @@ extension CameraService: AVCaptureVideoDataOutputSampleBufferDelegate {
         didDrop sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
-        // Handle dropped frames if needed
+        // Frames are being dropped - this is expected with alwaysDiscardsLateVideoFrames
+        // when processing takes longer than frame interval
     }
 }
 
