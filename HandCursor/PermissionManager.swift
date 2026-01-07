@@ -92,16 +92,15 @@ final class PermissionManager {
         return AXIsProcessTrusted()
     }
     
-    /// Request accessibility permission by opening System Settings
-    /// Note: macOS doesn't have a direct API to request this - must open settings
+    /// Request accessibility permission by showing system prompt
+    /// Note: macOS doesn't have a direct API to request this - shows system dialog
     func requestAccessibilityPermission() {
-        // Check current status
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        let isTrusted = AXIsProcessTrustedWithOptions(options)
+        let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+        let accessEnabled = AXIsProcessTrustedWithOptions(options)
         
-        if !isTrusted {
-            print("ℹ️ Accessibility permission not granted. Opening System Settings...")
-            // The above call with prompt option will show the system dialog
+        if !accessEnabled {
+            print("⚠️ Accessibility permissions required for cursor control")
+            print("Please enable in System Settings > Privacy & Security > Accessibility")
         }
     }
     

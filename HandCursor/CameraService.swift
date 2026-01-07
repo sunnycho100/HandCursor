@@ -26,7 +26,7 @@ final class CameraService: NSObject, CameraServiceProtocol {
     /// Synchronous frame handler called on the capture queue - use this for processing
     nonisolated(unsafe) var frameHandler: ((CVPixelBuffer, CFTimeInterval) -> Void)?
     
-    private let captureSession = AVCaptureSession()
+    private nonisolated(unsafe) let captureSession = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
     private let sessionQueue = DispatchQueue(label: "com.handcursor.camera", qos: .userInteractive)
     
@@ -42,7 +42,9 @@ final class CameraService: NSObject, CameraServiceProtocol {
     }
     
     deinit {
-        stop()
+        Task { @MainActor in
+            stop()
+        }
     }
     
     // MARK: - Public Methods

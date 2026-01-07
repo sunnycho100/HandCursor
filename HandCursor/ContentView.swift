@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Combine
 
 struct ContentView: View {
     
@@ -96,7 +97,6 @@ struct ContentView: View {
                     .cornerRadius(10)
                 }
                 .buttonStyle(.plain)
-                .disabled(!viewModel.canStart && !viewModel.isRunning)
             }
             .padding(.bottom, 30)
         }
@@ -179,14 +179,6 @@ class HandCursorViewModel: ObservableObject {
     }
     
     func startTracking() {
-        // Recheck permissions before starting
-        checkPermissions()
-        
-        guard canStart else {
-            print("⚠️ Cannot start: missing permissions")
-            return
-        }
-        
         Task {
             await appController.start()
         }

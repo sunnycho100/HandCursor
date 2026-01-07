@@ -22,7 +22,7 @@ protocol AppControllerDelegate: AnyObject {
 
 // MARK: - State
 
-enum AppControllerState {
+enum AppControllerState: Equatable {
     case stopped
     case starting
     case running
@@ -70,7 +70,7 @@ final class AppController: NSObject {
     
     // Threading: Vision processing queue
     private let visionQueue = DispatchQueue(label: "com.handcursor.vision", qos: .userInteractive)
-    private var isProcessingFrame = false // Guards against frame stacking
+    private nonisolated(unsafe) var isProcessingFrame = false // Guards against frame stacking
     
     // Performance tracking
     private var lastFrameTime: CFTimeInterval = 0
@@ -96,6 +96,9 @@ final class AppController: NSObject {
         super.init()
         
         setupPipeline()
+        
+        // Request accessibility permission on initialization (shows system prompt)
+        PermissionManager.shared.requestAccessibilityPermission()
     }
     
     // MARK: - Setup
@@ -168,8 +171,6 @@ final class AppController: NSObject {
         // Enqueue Vision processing on dedicated queue
         visionQueue.async { [weak self] in
             guard let self = self else { return }
-            
-            let processingStartTime = CACurrentMediaTime()
             
             // Step 1: Hand detection (Vision framework - synchronous, CPU/GPU intensive)
             let handFrame = self.handTrackingService.processFrame(pixelBuffer, timestamp: captureTimestamp)
