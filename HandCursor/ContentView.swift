@@ -2,16 +2,14 @@
 //  ContentView.swift
 //  HandCursor
 //
-//  Main view that orchestrates the hand tracking cursor pipeline
+//  Main view with start/stop controls and permission status
 //
 
 import SwiftUI
-import AVFoundation
-import Combine
 
 struct ContentView: View {
     
-    @StateObject private var coordinator = HandCursorCoordinator()
+    @StateObject private var viewModel = HandCursorViewModel()
     
     var body: some View {
         VStack(spacing: 20) {
@@ -25,16 +23,51 @@ struct ContentView: View {
                     .font(.largeTitle)
                     .fontWeight(.bold)
             }
-            .padding(.top, 40)
+            .padding(.top, 30)
+            
+            // Permission warnings
+            if let permissionMessage = viewModel.permissionMessage {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(permissionMessage)
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .multilineTextAlignment(.leading)
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.orange.opacity(0.1))
+                        .cornerRadius(8)
+                    
+                    HStack(spacing: 12) {
+                        if !viewModel.cameraPermissionGranted {
+                            Button("Open Camera Settings") {
+                                PermissionManager.shared.openCameraSettings()
+                            }
+                            .font(.caption)
+                        }
+                        
+                        if !viewModel.accessibilityPermissionGranted {
+                            Button("Open Accessibility Settings") {
+                                PermissionManager.shared.openAccessibilitySettings()
+                            }
+                            .font(.caption)
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+            }
             
             // Status
             VStack(spacing: 12) {
-                StatusRow(label: "Camera", value: coordinator.isCameraRunning ? "Active" : "Inactive", 
-                         color: coordinator.isCameraRunning ? .green : .gray)
-                StatusRow(label: "Hand Detected", value: coordinator.isHandDetected ? "Yes" : "No",
-                         color: coordinator.isHandDetected ? .green : .orange)
-                StatusRow(label: "Gesture State", value: coordinator.gestureState.description,
+                StatusRow(label: "Status", value: viewModel.statusText, 
+                         color: viewModel.isRunning ? .green : .gray)
+                StatusRow(label: "Hand Detected", value: viewModel.isHandDetected ? "Yes" : "No",
+                         color: viewModel.isHandDetected ? .green : .orange)
+                StatusRow(label: "Gesture", value: viewModel.gestureState.description,
                          color: .blue)
+                StatusRow(label: "FPS", value: String(format: "%.1f", viewModel.fps),
+                         color: viewModel.fps > 20 ? .green : .orange)
+                StatusRow(label: "Latency", value: String(format: "%.1f ms", viewModel.latency),
+                         color: viewModel.latency < 50 ? .green : .orange)
             }
             .padding()
             .background(Color.gray.opacity(0.1))
@@ -44,36 +77,30 @@ struct ContentView: View {
             
             // Controls
             VStack(spacing: 16) {
-                Toggle("Enable Cursor Control", isOn: $coordinator.isEnabled)
+                Toggle("Enable Cursor Control", isOn: $viewModel.isEnabled)
                     .toggleStyle(.switch)
                     .padding(.horizontal)
+                    .disabled(!viewModel.isRunning)
                 
                 Button(action: {
-                    coordinator.toggleTracking()
+                    viewModel.toggleTracking()
                 }) {
                     HStack {
-                        Image(systemName: coordinator.isCameraRunning ? "stop.circle.fill" : "play.circle.fill")
-                        Text(coordinator.isCameraRunning ? "Stop Tracking" : "Start Tracking")
+                        Image(systemName: viewModel.isRunning ? "stop.circle.fill" : "play.circle.fill")
+                        Text(viewModel.isRunning ? "Stop Tracking" : "Start Tracking")
                     }
                     .frame(maxWidth: .infinity)
                     .padding()
-                    .background(coordinator.isCameraRunning ? Color.red : Color.blue)
+                    .background(viewModel.isRunning ? Color.red : Color.blue)
                     .foregroundColor(.white)
                     .cornerRadius(10)
                 }
                 .buttonStyle(.plain)
-                
-                if let error = coordinator.errorMessage {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundColor(.red)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                }
+                .disabled(!viewModel.canStart && !viewModel.isRunning)
             }
-            .padding(.bottom, 40)
+            .padding(.bottom, 30)
         }
-        .frame(width: 400, height: 500)
+        .frame(width: 450, height: 600)
         .padding()
     }
 }
@@ -96,55 +123,55 @@ struct StatusRow: View {
     }
 }
 
-// MARK: - Coordinator
+// MARK: - View Model
 
 @MainActor
-class HandCursorCoordinator: NSObject, ObservableObject {
+class HandCursorViewModel: ObservableObject {
     
     // MARK: - Published Properties
     
-    @Published var isCameraRunning = false
+    @Published var isRunning = false
     @Published var isHandDetected = false
     @Published var gestureState: GestureState = .idle
-    @Published var isEnabled = true
-    @Published var errorMessage: String?
+    @Published var fps: Double = 0
+    @Published var latency: Double = 0
+    @Published var isEnabled = true {
+        didSet {
+            appController.isEnabled = isEnabled
+        }
+    }
+    
+    @Published var cameraPermissionGranted = false
+    @Published var accessibilityPermissionGranted = false
+    @Published var permissionMessage: String?
+    
+    var statusText: String {
+        appController.state.description
+    }
+    
+    var canStart: Bool {
+        cameraPermissionGranted && accessibilityPermissionGranted
+    }
     
     // MARK: - Services
     
-    private let cameraService: CameraService
-    private let handTrackingService: HandTrackingService
-    private let stabilizationLayer: StabilizationLayer
-    private let gestureEngine: GestureEngine
-    private let pointerController: PointerController
+    private let appController: AppController
+    private let permissionManager = PermissionManager.shared
     
     // MARK: - Initialization
     
-    override init() {
-        self.cameraService = CameraService()
-        self.handTrackingService = HandTrackingService()
-        self.stabilizationLayer = StabilizationLayer()
-        self.gestureEngine = GestureEngine()
-        self.pointerController = PointerController()
+    init() {
+        self.appController = AppController()
+        self.appController.delegate = self
         
-        super.init()
-        setupDelegates()
-    }
-    
-    // MARK: - Setup
-    
-    private func setupDelegates() {
-        gestureEngine.delegate = self
-        
-        // Setup frame handler for synchronous processing on capture queue
-        cameraService.frameHandler = { [weak self] pixelBuffer, timestamp in
-            self?.processFrameOnCaptureQueue(pixelBuffer, timestamp: timestamp)
-        }
+        // Check initial permissions
+        checkPermissions()
     }
     
     // MARK: - Public Methods
     
     func toggleTracking() {
-        if isCameraRunning {
+        if isRunning {
             stopTracking()
         } else {
             startTracking()
@@ -152,77 +179,69 @@ class HandCursorCoordinator: NSObject, ObservableObject {
     }
     
     func startTracking() {
+        // Recheck permissions before starting
+        checkPermissions()
+        
+        guard canStart else {
+            print("⚠️ Cannot start: missing permissions")
+            return
+        }
+        
         Task {
-            do {
-                try await cameraService.start()
-                isCameraRunning = true
-                errorMessage = nil
-            } catch {
-                errorMessage = error.localizedDescription
-                print("Failed to start camera: \(error)")
-            }
+            await appController.start()
         }
     }
     
     func stopTracking() {
-        cameraService.stop()
-        isCameraRunning = false
-        isHandDetected = false
-        gestureState = .idle
-        stabilizationLayer.reset()
-        gestureEngine.reset()
+        appController.stop()
     }
     
-    // MARK: - Pipeline Processing
+    // MARK: - Permissions
     
-    /// Process frame synchronously on the camera capture queue
-    private nonisolated func processFrameOnCaptureQueue(_ pixelBuffer: CVPixelBuffer, timestamp: CFTimeInterval) {
-        // Step 1: Detect hand landmarks (synchronous, on capture queue)
-        let handFrame = handTrackingService.processFrame(pixelBuffer, timestamp: timestamp)
+    private func checkPermissions() {
+        let (camera, accessibility) = permissionManager.checkAllPermissions()
         
-        // Step 2: Send results to main thread for UI updates and gesture processing
-        Task { @MainActor [weak self] in
-            self?.processHandFrame(handFrame, timestamp: timestamp)
+        cameraPermissionGranted = camera.isGranted
+        accessibilityPermissionGranted = accessibility
+        permissionMessage = permissionManager.getPermissionsSummary()
+        
+        if !canStart {
+            print("ℹ️ Permissions status - Camera: \(camera.description), Accessibility: \(accessibility)")
         }
-    }
-    
-    /// Process hand frame results on main thread
-    private func processHandFrame(_ handFrame: HandFrame?, timestamp: CFTimeInterval) {
-        guard let handFrame = handFrame else {
-            isHandDetected = false
-            gestureEngine.processFrame(
-                HandFrame(timestamp: timestamp, landmarks: [], confidence: 0),
-                smoothedPoint: SmoothedPoint(point: .zero, timestamp: timestamp, rawPoint: .zero)
-            )
-            return
-        }
-        
-        isHandDetected = true
-        
-        // Get pointer position (use index tip)
-        guard let indexTip = handFrame.indexTip else {
-            return
-        }
-        
-        // Smooth the position
-        let smoothedPoint = stabilizationLayer.smooth(point: indexTip.point, timestamp: timestamp)
-        
-        // Process gesture
-        gestureEngine.processFrame(handFrame, smoothedPoint: smoothedPoint)
     }
 }
 
-// MARK: - Gesture Engine Delegate
+// MARK: - App Controller Delegate
 
-extension HandCursorCoordinator: GestureEngineDelegate {
+extension HandCursorViewModel: AppControllerDelegate {
     
-    func gestureEngine(_ engine: GestureEngineProtocol, didEmit event: GestureEvent) {
-        guard isEnabled else { return }
-        pointerController.handleEvent(event)
+    func appController(_ controller: AppController, didUpdateState state: AppControllerState) {
+        switch state {
+        case .running:
+            isRunning = true
+        case .stopped:
+            isRunning = false
+            isHandDetected = false
+            fps = 0
+            latency = 0
+        case .error:
+            isRunning = false
+        default:
+            break
+        }
     }
     
-    func gestureEngine(_ engine: GestureEngineProtocol, didChangeState newState: GestureState) {
-        gestureState = newState
+    func appController(_ controller: AppController, didUpdateFPS fps: Double, latency: Double) {
+        self.fps = fps
+        self.latency = latency
+    }
+    
+    func appController(_ controller: AppController, didDetectHand: Bool) {
+        self.isHandDetected = didDetectHand
+    }
+    
+    func appController(_ controller: AppController, didChangeGestureState state: GestureState) {
+        self.gestureState = state
     }
 }
 

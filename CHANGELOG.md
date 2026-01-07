@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.0] - 2026-01-07
+
+### Added
+- AppController for centralized pipeline orchestration with threading and frame dropping
+- PermissionManager for camera and accessibility permission handling
+- FPS and latency metrics tracking and display
+- Permission status UI with buttons to open System Settings
+- Info.plist with camera usage description
+
+### Changed
+- Replaced HandCursorCoordinator with AppController for better separation of concerns
+- Vision processing now runs on dedicated queue with frame dropping for low latency
+- UI updated to show FPS, latency, and permission warnings
+
 ## [1.0.2] - 2026-01-07
 
 ### Fixed
